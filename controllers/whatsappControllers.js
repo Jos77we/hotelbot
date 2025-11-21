@@ -11,10 +11,10 @@ async function whatsappWebhook(req, res) {
     await handleIncomingMessage(from, body);
 
     // We reply 200 OK since we're sending outbound messages via REST API
-    res.sendStatus(200);
+    res.status(200).end();
   } catch (err) {
     logger.error("WhatsApp webhook error: " + err.message);
-    res.sendStatus(200); // avoid Twilio retries; we already logged it
+    res.status(200).end();// avoid Twilio retries; we already logged it
   }
 }
 

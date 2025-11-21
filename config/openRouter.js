@@ -1,15 +1,14 @@
-const axios = require('axios');
-const { OPENROUTER_API_KEY } = require('./env');
+const axios = require("axios");
+require("dotenv").config();
 
-const openRouterClient = axios.create({
-  baseURL: 'https://openrouter.ai/api/v1',
-  timeout: 30000,
+const openRouter = axios.create({
+  baseURL: "https://openrouter.ai/api/v1",
   headers: {
-    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-    'Content-Type': 'application/json',
-    'HTTP-Referer': 'https://your-domain.example',
-    'X-Title': 'Nairobi 4-Star Hotel Bot'
-  }
+    "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+    "X-Title": "Hotel WhatsApp Bot",
+    "Content-Type": "application/json"
+  },
+  timeout: 20000
 });
 
-module.exports = openRouterClient;
+module.exports = openRouter;

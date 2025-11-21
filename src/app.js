@@ -7,10 +7,10 @@ const app = express();
 
 // Twilio posts urlencoded
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+// app.use(bodyParser.json());
 
 // Healthcheck
-app.get('/', (_req, res) => res.status(200).send('Hotel Bot OK'));
+app.get('/', (_req, res) => res.status(200).end());
 
 // Routes
 app.use('/whatsapp', whatsappRoutes);

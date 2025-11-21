@@ -1,40 +1,190 @@
-const openRouterClient = require('../config/openRouter');
-const logger = require('../utils/logger');
+const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
+const logger = require("../utils/logger");
 
-// Minimal, defensive AI parse (optional/fallback)
-exports.analyzeUserText = async (text) => {
-  try {
-    const prompt = `
-You are an assistant for a Nairobi 4-star hotel. Analyze the user's message and return a compact JSON with:
-- intent: one of ["main_menu", "bookings", "corporate", "outdoor", "unknown"]
-- room_category: one of ["regular", "mid-size", "penthouse", null]
-- date: ISO yyyy-mm-dd or null
-- people: integer or null
-- wants_payment: boolean
-- confirm_booking: boolean
+const MODEL = "deepseek/deepseek-r1-0528-qwen3-8b:free";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-User: "${text}"`;
+// Path for the log file
+const LOG_FILE_PATH = path.join(__dirname, "../logs/ai_interactions.json");
 
-    const { data } = await openRouterClient.post('/chat/completions', {
-      model: 'openrouter/auto',
-      messages: [
-        { role: 'system', content: 'You are a helpful hotel booking assistant.' },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.2
-    });
-
-    const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content
-      ? data.choices[0].message.content : '{}';
-
-    const parsed = JSON.parse(stripFences(content));
-    return parsed;
-  } catch (e) {
-    logger.error('AI parse error', e);
-    return { intent: 'unknown', room_category: null, date: null, people: null, wants_payment: false, confirm_booking: false };
+/**
+ * Ensure log directory and file exist
+ */
+function ensureLogFile() {
+  const logDir = path.dirname(LOG_FILE_PATH);
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
   }
-};
-
-function stripFences(s) {
-  return (s || '').replace(/```json|```/g, '').trim();
+  
+  if (!fs.existsSync(LOG_FILE_PATH)) {
+    fs.writeFileSync(LOG_FILE_PATH, JSON.stringify([], null, 2));
+  }
 }
+
+/**
+ * Log interaction to JSON file
+ */
+function logInteraction(step, session, userMessage, devMessage, aiResponse, error = null) {
+  try {
+    ensureLogFile();
+    
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      step,
+      session: session || {},
+      userMessage,
+      devMessage,
+      aiResponse,
+      error: error ? error.message : null
+    };
+    
+    const currentLogs = JSON.parse(fs.readFileSync(LOG_FILE_PATH, 'utf8'));
+    currentLogs.push(logEntry);
+    
+    fs.writeFileSync(LOG_FILE_PATH, JSON.stringify(currentLogs, null, 2));
+    
+    console.log(`Interaction logged at: ${logEntry.timestamp}`);
+  } catch (logError) {
+    console.error("Failed to log interaction:", logError.message);
+  }
+}
+
+/**
+ * Ask AI to rephrase a message naturally and extract fields.
+ */
+async function generateAIReply({ step, session, userMessage, devMessage }) {
+  const systemPrompt = `
+You are "Serenity Hotel Assistant", a friendly WhatsApp concierge.
+Your job is to write empathetic, concise replies — BUT you never decide flow.
+The app controls the steps, you only:
+1. Rephrase the developer message into a warm assistant reply.
+2. Extract values from the user message (intent, date, yes/no, mpesa, etc.).
+
+Return JSON only:
+{
+  "assistant_text": "polished reply to user based on devMessage",
+  "extracted": {
+    "intent"?: "bookings" | "corporate" | "outdoor" | "other",
+    "date"?: "YYYY-MM-DD",
+    "people"?: number,
+    "category"?: "regular" | "mid-size" | "penthouse",
+    "pkg"?: "package1" | "package2" | "custom",
+    "mpesa"?: string,
+    "yesno"?: "yes" | "no"
+  }
+}
+
+IMPORTANT: Return ONLY valid JSON, with no additional text or explanations.`;
+
+  const userPrompt = `
+STEP: ${step}
+SESSION_DATA: ${JSON.stringify(session?.data || {})}
+USER_MESSAGE: ${userMessage}
+DEVELOPER_MESSAGE: ${devMessage}
+
+Now return the JSON only.`;
+
+  console.log("Sending request to OpenRouter API...");
+  console.log("API Key present:", !!OPENROUTER_API_KEY);
+  console.log("Model:", MODEL);
+  console.log("Step:", step);
+  console.log("User message:", userMessage);
+  console.log("Dev message:", devMessage);
+
+  let aiResponse = {
+    assistant_text: "",
+    extracted: {}
+  };
+  let error = null;
+
+  try {
+    const response = await axios.post(
+      OPENROUTER_API_URL,
+      {
+        model: MODEL,
+        temperature: 0.5,
+        max_tokens: 300,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://serenity-hotel.ai",
+          "X-Title": "Serenity Hotel Assistant"
+        },
+        timeout: 30000
+      }
+    );
+
+    console.log("OpenRouter API response status:", response.status);
+    console.log("OpenRouter API response data:", JSON.stringify(response.data, null, 2));
+
+    const text = response.data?.choices?.[0]?.message?.content?.trim() || "";
+    console.log("AI raw response text:", text);
+
+    if (!text) {
+      console.error("Empty response from AI");
+      aiResponse = {
+        assistant_text: devMessage || "Let's continue.",
+        extracted: {},
+      };
+    } else {
+      // Try to extract JSON from the response
+      let jsonString = text;
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        jsonString = jsonMatch[0];
+        console.log("Extracted JSON string:", jsonString);
+      }
+
+      try {
+        const json = JSON.parse(jsonString);
+        console.log("Parsed JSON:", JSON.stringify(json, null, 2));
+        
+        aiResponse = {
+          assistant_text: json.assistant_text || devMessage || "Let's continue with the next step.",
+          extracted: json.extracted || {},
+        };
+      } catch (e) {
+        console.error("JSON parse error:", e.message);
+        console.error("Text that failed to parse:", jsonString);
+        error = e;
+        aiResponse = {
+          assistant_text: devMessage || "Let's continue.",
+          extracted: {},
+        };
+      }
+    }
+  } catch (err) {
+    console.error("AI API error details:");
+    console.error("Error message:", err.message);
+    error = err;
+    
+    if (err.response) {
+      console.error("Response status:", err.response.status);
+      console.error("Response data:", err.response.data);
+    } else if (err.request) {
+      console.error("No response received:", err.request);
+    }
+    
+    aiResponse = {
+      assistant_text: devMessage || "Let's continue.",
+      extracted: {},
+    };
+  }
+
+  // Log the interaction to JSON file
+  logInteraction(step, session, userMessage, devMessage, aiResponse, error);
+
+  return aiResponse;
+}
+
+module.exports = { generateAIReply };

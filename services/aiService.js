@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const logger = require("../utils/logger");
 
-const MODEL = "deepseek/deepseek-r1-0528-qwen3-8b:free";
+const MODEL = "x-ai/grok-4.1-fast:free";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 

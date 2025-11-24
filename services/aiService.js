@@ -7,6 +7,14 @@ const MODEL = "deepseek/deepseek-r1-0528-qwen3-8b:free";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
+// Rate limiting configuration
+const RATE_LIMIT_DELAY = 30000; // 30 seconds in milliseconds
+const MAX_RETRIES = 2; // Maximum number of retries for rate limits
+
+// Track rate limit state
+let isRateLimited = false;
+let lastRateLimitTime = 0;
+
 // Path for the log file
 const LOG_FILE_PATH = path.join(__dirname, "../logs/ai_interactions.json");
 
@@ -38,7 +46,8 @@ function logInteraction(step, session, userMessage, devMessage, aiResponse, erro
       userMessage,
       devMessage,
       aiResponse,
-      error: error ? error.message : null
+      error: error ? error.message : null,
+      rateLimited: isRateLimited
     };
     
     const currentLogs = JSON.parse(fs.readFileSync(LOG_FILE_PATH, 'utf8'));
@@ -49,6 +58,72 @@ function logInteraction(step, session, userMessage, devMessage, aiResponse, erro
     console.log(`Interaction logged at: ${logEntry.timestamp}`);
   } catch (logError) {
     console.error("Failed to log interaction:", logError.message);
+  }
+}
+
+/**
+ * Check if we're currently rate limited and wait if needed
+ */
+async function handleRateLimit() {
+  if (isRateLimited) {
+    const timeSinceLimit = Date.now() - lastRateLimitTime;
+    const timeToWait = RATE_LIMIT_DELAY - timeSinceLimit;
+    
+    if (timeToWait > 0) {
+      console.log(`⏳ Rate limit active. Waiting ${Math.ceil(timeToWait / 1000)} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, timeToWait));
+    }
+    
+    // Reset rate limit state after waiting
+    isRateLimited = false;
+    console.log("✅ Rate limit period over, continuing...");
+  }
+}
+
+/**
+ * Make API call with retry logic for rate limits
+ */
+async function makeAPIRequest(requestData, retryCount = 0) {
+  try {
+    console.log(`🔄 API Request attempt ${retryCount + 1}...`);
+    
+    const response = await axios.post(
+      OPENROUTER_API_URL,
+      requestData,
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://serenity-hotel.ai",
+          "X-Title": "Serenity Hotel Assistant"
+        },
+        timeout: 30000
+      }
+    );
+    
+    return response;
+  } catch (err) {
+    // Check if this is a rate limit error (429)
+    if (err.response && err.response.status === 429) {
+      console.log("🚨 Rate limit detected (429)");
+      
+      // Set rate limit state
+      isRateLimited = true;
+      lastRateLimitTime = Date.now();
+      
+      // Retry if we haven't exceeded max retries
+      if (retryCount < MAX_RETRIES) {
+        console.log(`⏳ Waiting ${RATE_LIMIT_DELAY / 1000} seconds before retry ${retryCount + 1}/${MAX_RETRIES}...`);
+        await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
+        return makeAPIRequest(requestData, retryCount + 1);
+      } else {
+        console.log("❌ Max retries exceeded for rate limit");
+        throw new Error(`Rate limit exceeded after ${MAX_RETRIES} retries. Please try again later.`);
+      }
+    }
+    
+    // For other errors, just re-throw
+    throw err;
   }
 }
 
@@ -101,28 +176,21 @@ Now return the JSON only.`;
   let error = null;
 
   try {
-    const response = await axios.post(
-      OPENROUTER_API_URL,
-      {
-        model: MODEL,
-        temperature: 0.5,
-        max_tokens: 300,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://serenity-hotel.ai",
-          "X-Title": "Serenity Hotel Assistant"
-        },
-        timeout: 30000
-      }
-    );
+    // Check and handle rate limits before making request
+    await handleRateLimit();
+
+    const requestData = {
+      model: MODEL,
+      temperature: 0.5,
+      max_tokens: 300,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      response_format: { type: "json_object" }
+    };
+
+    const response = await makeAPIRequest(requestData);
 
     console.log("OpenRouter API response status:", response.status);
     console.log("OpenRouter API response data:", JSON.stringify(response.data, null, 2));
